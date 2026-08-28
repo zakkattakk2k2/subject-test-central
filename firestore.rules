@@ -1,0 +1,80 @@
+rules_version = '2';
+
+// ============================================================
+// Firestore rules for the Subject Test Central hosted tests.
+//
+// PASTE THESE INTO: Firebase console → project schedulemaker-c212c
+//   → Firestore Database → Rules.
+//
+// IMPORTANT: your Schedule Maker uses the same database. Keep its
+// existing match blocks (artifacts/genius-schedules/...) and ADD the
+// gpt-sat-formbuilder blocks below — do not delete what is there.
+// The generic blocks at the bottom reproduce the usual defaults the
+// Schedule Maker relies on, scoped so they do NOT weaken the
+// formbuilder paths.
+//
+// When you add an admin in index.html's ACCESS CONTROL PANEL, add
+// the same email to isAdmin() here.
+// ============================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn(){ return request.auth != null; }
+    function userEmail(){ return request.auth.token.email.lower(); }
+    function isAdmin(){
+      return isSignedIn() && userEmail() in [
+        'zak.k@geniuspremium.com'
+      ];
+    }
+    function isGenius(){
+      return isSignedIn() && userEmail().matches('.*@geniuspremium[.]com');
+    }
+
+    // ----- SAT form builder: hosted tests -----
+    match /artifacts/gpt-sat-formbuilder/public/data/assignments/{aid} {
+      // A student may see (and live-query) only assignments addressed
+      // to their own email; admins see everything.
+      allow read: if isAdmin() || (isGenius() && resource.data.studentEmail == userEmail());
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /artifacts/gpt-sat-formbuilder/public/data/assignmentBanks/{aid} {
+      // The paper itself: the student can fetch it ONLY inside the
+      // assignment's time window. This is the server-side enforcement
+      // of "login + specified time".
+      allow read: if isAdmin() || (
+        isGenius()
+        && get(/databases/$(database)/documents/artifacts/gpt-sat-formbuilder/public/data/assignments/$(aid)).data.studentEmail == userEmail()
+        && request.time >= get(/databases/$(database)/documents/artifacts/gpt-sat-formbuilder/public/data/assignments/$(aid)).data.start
+        && request.time <= get(/databases/$(database)/documents/artifacts/gpt-sat-formbuilder/public/data/assignments/$(aid)).data.end
+      );
+      allow write: if isAdmin();
+    }
+
+    match /artifacts/gpt-sat-formbuilder/public/data/results/{rid} {
+      // A student can file results only under their own email, and can
+      // read back their own (used for the "Submitted" status). Only
+      // admins can change or remove results.
+      allow read: if isAdmin() || (isGenius() && resource.data.studentEmail == userEmail());
+      allow create: if isAdmin() || (isGenius() && request.resource.data.studentEmail == userEmail());
+      allow update, delete: if isAdmin();
+    }
+
+    // Per-user private data for the form builder (the issued-forms log).
+    match /artifacts/gpt-sat-formbuilder/users/{uid}/{document=**} {
+      allow read, write: if isSignedIn() && request.auth.uid == uid;
+    }
+
+    // ----- Schedule Maker (keep working as before) -----
+    // These reproduce the permissive canvas-style defaults ONLY for
+    // the schedule maker's appId. Adjust if your current rules are
+    // already stricter.
+    match /artifacts/genius-schedules/users/{uid}/{document=**} {
+      allow read, write: if isSignedIn() && request.auth.uid == uid;
+    }
+    match /artifacts/genius-schedules/public/data/{document=**} {
+      allow read, write: if isSignedIn();
+    }
+  }
+}
