@@ -4,6 +4,24 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SAT Math Mock — Form Builder</title>
+
+<!-- ================================================================
+     ╔════════════════════════════════════════════════════════════╗
+     ║   ZAK'S ACCESS CONTROL PANEL — edit ONLY this block         ║
+     ╚════════════════════════════════════════════════════════════╝
+     ALLOWED_USERS — only these Google accounts can open the builder.
+     Everyone else who signs in is told access has not been granted.
+     Add a teammate by adding their email to the list, one per line.
+================================================================= -->
+<script>
+window.ACCESS = {
+  ALLOWED_USERS: [
+    'zak.k@geniuspremium.com',
+  ],
+};
+</script>
+<!-- ============== END OF ACCESS CONTROL PANEL ================== -->
+
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
@@ -94,12 +112,45 @@ table.log tr:last-child td{border-bottom:0}
 .compo dt{color:var(--ink2)}
 .compo dd{margin:0; font-family:"IBM Plex Mono",monospace; font-weight:500}
 .fineprint{font-size:.79rem; color:var(--ink3); line-height:1.5}
+
+/* ---------- auth gate + header auth bar ---------- */
+.hin{position:relative}
+.authbar{position:absolute; top:1.4rem; right:1.25rem; display:flex; align-items:center; gap:.6rem}
+.authbar #userStatus{font-size:.78rem; font-weight:600; color:var(--ink3)}
+@media (max-width:700px){ .authbar{position:static; margin-top:.8rem} }
+#auth-gate{position:fixed; inset:0; z-index:1000; background:var(--ground); display:flex; align-items:center; justify-content:center; padding:1.25rem}
+#auth-gate[hidden]{display:none}
+#auth-gate .gate-card{background:var(--surface); border:1px solid var(--rule); border-radius:14px; box-shadow:var(--shadow); padding:2rem 1.8rem; max-width:26rem; width:100%; text-align:center}
+#auth-gate h2{font-size:1.35rem; margin:.35rem 0 .6rem}
+#auth-gate .gate-msg{font-size:.92rem; color:var(--ink2); margin:0 0 1.2rem; line-height:1.55}
+#auth-gate .btn{justify-content:center}
+#auth-gate .gate-fine{margin-top:1rem; min-height:1.2em}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
 </head>
 <body>
+
+<!-- Sign-in gate: the builder stays locked until an ALLOWED_USERS
+     account (see ACCESS CONTROL PANEL at the top of this file) has
+     signed in with Google. Wired up in the Firebase module script
+     at the bottom of the file. -->
+<div id="auth-gate">
+  <div class="gate-card">
+    <div class="eyebrow">Genius Premium Tuition · internal tool</div>
+    <h2>SAT Math Mock — Form Builder</h2>
+    <p class="gate-msg" id="gate-msg">This tool issues exam papers and their passwords, so it is locked behind your Genius Google account.</p>
+    <button class="btn primary" id="gate-signin" style="width:100%; padding:.7rem">Sign in with Google</button>
+    <button class="btn" id="gate-signout" style="width:100%; padding:.7rem; display:none">Sign out</button>
+    <p class="fineprint gate-fine" id="gate-fine"></p>
+  </div>
+</div>
+
 <header>
   <div class="hin">
+    <div class="authbar">
+      <span id="userStatus">Checking sign-in&hellip;</span>
+      <button class="btn sm" id="auth-btn" style="display:none">Logout</button>
+    </div>
     <div class="eyebrow">Genius Premium Tuition · internal tool</div>
     <h1>SAT Math Mock — Form Builder</h1>
     <p>Issues a fresh, self-contained copy of the hard-module SAT Math paper with its own password. The question bank inside each file is encrypted with that password, so a student cannot read the paper or the answer key out of the page source. Every form you have issued keeps working with the password it was issued with.</p>
@@ -168,7 +219,7 @@ table.log tr:last-child td{border-bottom:0}
       <button class="btn sm" id="csv">Download log as CSV</button>
       <button class="btn sm ghost" id="clearlog">Clear log</button>
     </div>
-    <p class="fineprint" style="margin-top:1rem">This log lives in this browser only. It is not part of any generated paper, and clearing your browser data clears it. Download the CSV if it matters.</p>
+    <p class="fineprint" style="margin-top:1rem" id="logsyncnote">While you are signed in this log also syncs to your Genius cloud account, so it follows you between devices. It is not part of any generated paper. Download the CSV as a backup if it matters.</p>
   </section>
 </main>
 
@@ -310,8 +361,18 @@ function toast(m){ const el = document.getElementById("genmsg"); el.textContent 
 /* ---------- log ---------- */
 const KEY = "gpt-sat-form-log-v1";
 function readLog(){ try { return JSON.parse(localStorage.getItem(KEY) || "[]"); } catch (_) { return []; } }
-function writeLog(l){ try { localStorage.setItem(KEY, JSON.stringify(l)); } catch (_) {} }
+function writeLog(l){
+  try { localStorage.setItem(KEY, JSON.stringify(l)); } catch (_) {}
+  if (window.__cloudSaveLog) window.__cloudSaveLog(l);   // mirrors to Firestore when signed in
+}
 let MEMLOG = readLog();
+// Bridge for the Firebase module script at the bottom of the file.
+window.__getLog = () => MEMLOG;
+window.__setLog = l => {
+  MEMLOG = l;
+  try { localStorage.setItem(KEY, JSON.stringify(l)); } catch (_) {}
+  renderLog();
+};
 function addLog(entry){ MEMLOG = [entry, ...MEMLOG].slice(0, 200); writeLog(MEMLOG); renderLog(); }
 function renderLog(){
   const t = document.getElementById("logtable");
@@ -372,6 +433,133 @@ syncCalcHint();
 
 document.getElementById("gen").onclick = generate;
 renderLog();
+</script>
+
+<!-- ================================================================
+     FIREBASE AUTH + CLOUD LOG SYNC
+     Same Firebase project and login flow as the Genius Schedule
+     Maker: Google sign-in popup, onAuthStateChanged drives the UI,
+     and per-user data lives under artifacts/{appId}/users/{uid}.
+     Who may use the builder is decided by ALLOWED_USERS in the
+     ACCESS CONTROL PANEL at the top of this file.
+================================================================= -->
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+import { getAuth, onAuthStateChanged, signInWithPopup, GoogleAuthProvider, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyBvFSgHf04mEm8fBsfkc0umWv0J_UjB7j4",
+  authDomain: "schedulemaker-c212c.firebaseapp.com",
+  projectId: "schedulemaker-c212c",
+  storageBucket: "schedulemaker-c212c.firebasestorage.app",
+  messagingSenderId: "91220803760",
+  appId: "1:91220803760:web:f0ddb2a415a2f7394b3b75"
+};
+
+const app  = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db   = getFirestore(app);
+const appId = "gpt-sat-formbuilder";   // keeps this tool's data separate from the schedule maker's
+
+const gate     = document.getElementById("auth-gate");
+const gateMsg  = document.getElementById("gate-msg");
+const gateFine = document.getElementById("gate-fine");
+const btnIn    = document.getElementById("gate-signin");
+const btnOut   = document.getElementById("gate-signout");
+const status   = document.getElementById("userStatus");
+const authBtn  = document.getElementById("auth-btn");
+const syncNote = document.getElementById("logsyncnote");
+
+function isAllowed(user){
+  return !!(user && user.email && window.ACCESS
+    && Array.isArray(window.ACCESS.ALLOWED_USERS)
+    && window.ACCESS.ALLOWED_USERS.some(e => e.toLowerCase() === user.email.toLowerCase()));
+}
+
+btnIn.onclick = () => {
+  gateFine.textContent = "";
+  signInWithPopup(auth, new GoogleAuthProvider()).catch(err => {
+    console.error(err);
+    gateFine.textContent = location.protocol === "file:"
+      ? "Sign-in popups do not work from a file opened straight off the disk — use the hosted link instead."
+      : "Could not connect to Google: " + err.message;
+  });
+};
+btnOut.onclick = () => { signOut(auth).then(() => window.location.reload()); };
+
+// ---------- cloud log sync ----------
+let unsubscribeLog = null;
+let applyingCloud  = false;
+
+function logKey(e){ return `${e.code}|${e.created}`; }
+function mergeLogs(cloud, local){
+  const seen = new Set(), out = [];
+  [...cloud, ...local].forEach(e => {
+    if (!e || !e.code || seen.has(logKey(e))) return;
+    seen.add(logKey(e)); out.push(e);
+  });
+  out.sort((a, b) => String(b.created).localeCompare(String(a.created)));
+  return out.slice(0, 200);
+}
+
+function setupLogSync(user){
+  const ref = doc(db, "artifacts", appId, "users", user.uid, "formlog", "main");
+  window.__cloudSaveLog = entries => {
+    if (applyingCloud) return;
+    setDoc(ref, { entries, updated: new Date().toISOString() }).catch(err => {
+      console.error(err);
+      status.innerText = "Signed in — cloud sync unavailable, log saved in this browser only";
+    });
+  };
+  unsubscribeLog = onSnapshot(ref, snap => {
+    const local = window.__getLog();
+    if (!snap.exists()){
+      if (local.length) window.__cloudSaveLog(local);   // first visit: seed cloud from this browser
+      return;
+    }
+    const cloud  = snap.data().entries || [];
+    const merged = mergeLogs(cloud, local);
+    applyingCloud = true;
+    window.__setLog(merged);
+    applyingCloud = false;
+    if (merged.length !== cloud.length) window.__cloudSaveLog(merged);
+  }, err => {
+    console.error(err);
+    status.innerText = "Signed in — cloud sync unavailable, log saved in this browser only";
+  });
+}
+
+// ---------- auth state drives everything ----------
+onAuthStateChanged(auth, user => {
+  if (unsubscribeLog){ unsubscribeLog(); unsubscribeLog = null; }
+  window.__cloudSaveLog = null;
+
+  if (user && isAllowed(user)){
+    gate.hidden = true;
+    status.innerText = `Synced securely as ${user.email.split("@")[0]}`;
+    authBtn.style.display = "inline-flex";
+    authBtn.onclick = () => { signOut(auth).then(() => window.location.reload()); };
+    if (syncNote) syncNote.textContent = "This log syncs to your Genius cloud account, so it follows you between devices. It is not part of any generated paper. Download the CSV as a backup if it matters.";
+    setupLogSync(user);
+  } else if (user){
+    // Signed in, but not on the ALLOWED_USERS list.
+    gate.hidden = false;
+    gateMsg.innerHTML = `<strong>${user.email}</strong> does not have access to this tool. Ask Zak to add you to the allowed list, or sign in with a different account.`;
+    btnIn.style.display = "none";
+    btnOut.style.display = "block";
+    status.innerText = "Access not granted";
+    authBtn.style.display = "none";
+  } else {
+    gate.hidden = false;
+    gateMsg.textContent = "This tool issues exam papers and their passwords, so it is locked behind your Genius Google account.";
+    btnIn.style.display = "block";
+    btnOut.style.display = "none";
+    status.innerText = "Not signed in";
+    authBtn.style.display = "none";
+    if (syncNote) syncNote.textContent = "While you are signed in this log also syncs to your Genius cloud account, so it follows you between devices. It is not part of any generated paper. Download the CSV as a backup if it matters.";
+  }
+});
 </script>
 </body>
 </html>
