@@ -783,11 +783,13 @@ function renderDash(){
         : "No attempt yet"}</div>
       <div class="actions">
         ${latest ? `<button class="btn sm" data-detail="${escH(a.id)}">Result detail</button>` : ""}
+        ${latest ? `<button class="btn sm" data-email="${escH(a.id)}">Email result</button>` : ""}
         <button class="btn sm ghost" data-del="${escH(a.id)}">Delete</button>
       </div>
     </div>`;
   }).join("");
   el.querySelectorAll("[data-detail]").forEach(b => b.onclick = () => toggleResultDetail(b.dataset.detail, b));
+  el.querySelectorAll("[data-email]").forEach(b => b.onclick = () => emailResult(b.dataset.email, b));
   el.querySelectorAll("[data-del]").forEach(b => b.onclick = () => deleteAssignment(b.dataset.del));
 }
 
@@ -812,6 +814,33 @@ function toggleResultDetail(aid, btn){
   pre.style.cssText = "white-space:pre-wrap;font-size:.78rem;line-height:1.55;background:var(--surface3);border-radius:8px;padding:.7rem .8rem;margin:.6rem 0 0;overflow-x:auto";
   pre.textContent = lines.join("\n");
   btn.closest(".arow").appendChild(pre);
+}
+
+/* Admin: (re)send a recorded result to admissions — covers attempts
+   whose automatic email did not go out (offline, stale page, etc.). */
+async function emailResult(aid, btn){
+  const a = DASH_A.find(x => x.id === aid);
+  const done = DASH_R.filter(r => r.assignmentId === aid && !r.voided).sort((x, y) => String(y.created).localeCompare(String(x.created)));
+  const r0 = done[0];
+  if (!a || !r0) return;
+  if (!window.ACCESS.EMAIL_WEBHOOK_URL){ alert("No email webhook is configured in the ACCESS panel."); return; }
+  btn.disabled = true; btn.textContent = "Sending…";
+  try {
+    const idToken = await currentUser.getIdToken();
+    const resp = await fetch(window.ACCESS.EMAIL_WEBHOOK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ idToken, result: r0 })
+    });
+    let ok = false;
+    try { ok = (await resp.json()).ok === true; } catch (_) {}
+    btn.textContent = ok ? "Email sent ✓" : "Email failed";
+    if (!ok) btn.disabled = false;
+  } catch (e) {
+    console.error(e);
+    btn.textContent = "Email failed";
+    btn.disabled = false;
+  }
 }
 
 function deleteAssignment(aid){
@@ -989,7 +1018,10 @@ window.addEventListener("message", async e => {
         headers: { "Content-Type": "text/plain;charset=utf-8" },
         body: JSON.stringify({ idToken, result: payload })
       });
-      mailed = r.ok;
+      // Apps Script answers 200 even when it refuses — read the body.
+      let ackBody = null;
+      try { ackBody = await r.json(); } catch (_) {}
+      mailed = !!(ackBody && ackBody.ok);
     } catch (err) { console.error("emailing result failed", err); }
   }
   if (e.source){
