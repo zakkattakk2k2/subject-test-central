@@ -697,7 +697,9 @@ function windowState(a, now = new Date()){
 const setHidden = (id, hide) => { const el = document.getElementById(id); if (el) el.hidden = hide; };
 function showRole(role){
   ["assign-card", "dash-card", "issue-card", "log-card"].forEach(id => setHidden(id, role !== "admin"));
-  setHidden("student-card", role !== "student");
+  // Admins also get the student card, so a test assigned to their own
+  // email can be sat (and the whole flow tested) from the same page.
+  setHidden("student-card", role !== "student" && role !== "admin");
 }
 
 let currentUser = null;
@@ -826,23 +828,26 @@ function startAdminListeners(){
   document.getElementById("a-assign").onclick = assignTest;
   unsubAssign = onSnapshot(pubCol("assignments"), snap => {
     DASH_A = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    renderDash();
+    renderDash(); renderStudent();
   }, err => { console.error(err); document.getElementById("dashlist").innerHTML = `<div class="empty">Could not load assignments: ${escH(err.message)}</div>`; });
   unsubResults = onSnapshot(pubCol("results"), snap => {
     DASH_R = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    renderDash();
+    renderDash(); renderStudent();
   }, err => console.error(err));
 }
 
 /* ---------- student: their tests ---------- */
 function renderStudent(){
   const el = document.getElementById("studentlist");
-  if (!el) return;
-  if (!DASH_A.length){
-    el.innerHTML = `<div class="empty">No tests are assigned to ${escH(currentUser ? currentUser.email : "you")} yet. If you are expecting one, tell Genius Premium Tuition — the assignment must use this exact email address.</div>`;
+  if (!el || !currentUser) return;
+  // For a student DASH_A is already just their own assignments; for an
+  // admin it is everything, so filter down to tests aimed at their email.
+  const mine = DASH_A.filter(a => a.studentEmail === currentUser.email.toLowerCase());
+  if (!mine.length){
+    el.innerHTML = `<div class="empty">No tests are assigned to ${escH(currentUser.email)} yet. If you are expecting one, tell Genius Premium Tuition — the assignment must use this exact email address.</div>`;
     return;
   }
-  const rows = DASH_A.slice().sort((x, y) => toDate(y.start) - toDate(x.start));
+  const rows = mine.slice().sort((x, y) => toDate(y.start) - toDate(x.start));
   el.innerHTML = rows.map(a => {
     const res = DASH_R.filter(r => r.assignmentId === a.id);
     const done = res.some(r => !r.voided);
